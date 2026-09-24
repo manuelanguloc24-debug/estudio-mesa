@@ -106,9 +106,18 @@ def borrar_fila_remota(pestaña, fila_index):
     except Exception:
         return False
 
+# --- BARRA LATERAL (SIDEBAR) ---
 st.sidebar.markdown("### ✨ **Estudio Mesa**")
 st.sidebar.caption("Panel de Control Financiero & Operativo")
-if st.sidebar.button("🔄 Sincronizar Datos"):
+
+# Botón directo para abrir Google Sheets en una nueva pestaña
+st.sidebar.link_button(
+    "📊 Abrir Google Sheets", 
+    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit", 
+    use_container_width=True
+)
+
+if st.sidebar.button("🔄 Sincronizar Datos", use_container_width=True):
     st.cache_data.clear()
 
 tab_dashboard, tab_registro = st.tabs(["📊 Balance Financiero", "📝 Registrar / Gestionar Operaciones"])
