@@ -106,11 +106,10 @@ def borrar_fila_remota(pestaña, fila_index):
     except Exception:
         return False
 
-# --- BARRA LATERAL (SIDEBAR) ---
+# --- BARRA LATERAL ---
 st.sidebar.markdown("### ✨ **Estudio Mesa**")
 st.sidebar.caption("Panel de Control Financiero & Operativo")
 
-# Botón directo para abrir Google Sheets en una nueva pestaña
 st.sidebar.link_button(
     "📊 Abrir Google Sheets", 
     f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/edit", 
@@ -165,8 +164,12 @@ with tab_registro:
 
         with st.form("form_gasto", clear_on_submit=True):
             fecha_gasto = st.date_input("Fecha", datetime.date.today(), key="g_fecha")
-            categoria_gasto = st.selectbox("Categoría", ["Insumos", "Empaques", "Operativos", "Servicios", "Otros"], key="g_cat")
-            desc_gasto = st.text_input("Descripción", placeholder="Ej. Harina, empaques, gas", key="g_desc")
+            categoria_gasto = st.selectbox(
+                "Categoría", 
+                ["Insumos", "Operativos", "Empaques", "Gastos Personales", "Otros"], 
+                key="g_cat"
+            )
+            desc_gasto = st.text_input("Descripción", placeholder="Ej. Harina, Gasolina personal, Medicina", key="g_desc")
             monto_gasto = st.number_input("Monto Total Pagado ($)", min_value=0.0, step=0.50, key="g_monto")
             submit_gasto = st.form_submit_button("💾 Guardar Gasto", use_container_width=True)
 
@@ -253,18 +256,46 @@ with tab_dashboard:
         ventas_mes = ventas_df[ventas_df['mes_año'] == mes_seleccionado]
         gastos_mes = gastos_diarios_df[gastos_diarios_df['mes_año'] == mes_seleccionado] if not gastos_diarios_df.empty else pd.DataFrame()
 
+        # CLASIFICACIÓN DE GASTOS EN LOS 3 BLOQUES
+        def clasificar_gasto(row):
+            cat = str(row['categoria']).lower()
+            desc = str(row['descripcion']).lower()
+            
+            # 1. Gastos Personales / Retiros
+            if 'personal' in cat or cat == 'otros' or any(p in desc for p in ['medicina', 'camisa', 'cena', 'temu', 'gasolina manuel', 'gas manuel']):
+                return 'Gastos Personales'
+            
+            # 2. Producción y Operativos juntos
+            if cat in ['insumos', 'operativos', 'empaques', 'produccion'] or 'lote' in desc or 'harina' in desc or 'huevo' in desc or 'leche' in desc:
+                return 'Producción y Operativos'
+                
+            return 'Producción y Operativos'
+
+        if not gastos_mes.empty:
+            gastos_mes['bloque'] = gastos_mes.apply(clasificar_gasto, axis=1)
+            gastos_prod_operativos = gastos_mes[gastos_mes['bloque'] == 'Producción y Operativos']
+            gastos_personales = gastos_mes[gastos_mes['bloque'] == 'Gastos Personales']
+        else:
+            gastos_prod_operativos = pd.DataFrame()
+            gastos_personales = pd.DataFrame()
+
+        total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
+        total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
+        costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
+
         unidades_vendidas = int(ventas_mes['unidades_vendidas'].sum())
         precio_unidad = ventas_mes['precio_venta_sin_iva'].iloc[0] if not ventas_mes.empty else 2.20
         ingresos_totales = unidades_vendidas * precio_unidad
         
-        costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
-        gastos_compras_mes = gastos_mes['monto'].sum() if not gastos_mes.empty else 0.0
-        egresos_totales = costos_fijos_mes + gastos_compras_mes
-        utilidad_neta = ingresos_totales - egresos_totales
+        # Egresos reales de la panadería (Fijos + Producción/Operativos)
+        egresos_negocio = costos_fijos_mes + total_prod_operativos
+        utilidad_operativa = ingresos_totales - egresos_negocio
+        dinero_libre_final = utilidad_operativa - total_personales
 
-        punto_equilibrio = int(egresos_totales / precio_unidad) if precio_unidad > 0 else 1
+        punto_equilibrio = int(egresos_negocio / precio_unidad) if precio_unidad > 0 else 1
         pct_cobertura = min(100.0, (unidades_vendidas / punto_equilibrio * 100)) if punto_equilibrio > 0 else 0
 
+        # TARJETAS KPI
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.markdown(f"""
@@ -277,18 +308,18 @@ with tab_dashboard:
         with k2:
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-title">Egresos Totales</div>
-                <div class="kpi-value">${egresos_totales:,.2f}</div>
-                <div class="kpi-subtitle kpi-neu">Fijos: ${costos_fijos_mes:,.2f} | Compras: ${gastos_compras_mes:,.2f}</div>
+                <div class="kpi-title">Costo Real Panadería</div>
+                <div class="kpi-value">${egresos_negocio:,.2f}</div>
+                <div class="kpi-subtitle kpi-neu">Fijos: ${costos_fijos_mes:,.2f} | Operación: ${total_prod_operativos:,.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         with k3:
-            color_clase = "kpi-pos" if utilidad_neta >= 0 else "kpi-neg"
+            color_clase = "kpi-pos" if utilidad_operativa >= 0 else "kpi-neg"
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-title">Utilidad Neta Real</div>
-                <div class="kpi-value {color_clase}">${utilidad_neta:,.2f}</div>
-                <div class="kpi-subtitle {color_clase}">Flujo de caja libre</div>
+                <div class="kpi-title">Ganancia Neta Negocio</div>
+                <div class="kpi-value {color_clase}">${utilidad_operativa:,.2f}</div>
+                <div class="kpi-subtitle kpi-neu">Retiros personales: ${total_personales:,.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         with k4:
@@ -302,9 +333,10 @@ with tab_dashboard:
 
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
+        # GRÁFICAS DE COBERTURA Y ENTREGAS
         g1, g2 = st.columns([1, 1])
         with g1:
-            st.markdown("##### 🎯 Cobertura de Costos del Mes")
+            st.markdown("##### 🎯 Cobertura de Costos de Panadería")
             df_pie = pd.DataFrame({
                 "Concepto": ["Cubierto", "Faltante"],
                 "Unidades": [unidades_vendidas, max(0, punto_equilibrio - unidades_vendidas)]
@@ -336,11 +368,38 @@ with tab_dashboard:
                 fig_bar.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=300)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-        if not gastos_mes.empty:
-            st.markdown("##### 📋 Compras y Gastos del Periodo")
-            gastos_mostrar = gastos_mes.copy()
-            gastos_mostrar['fecha'] = gastos_mostrar['fecha'].dt.strftime('%Y-%m-%d')
-            st.dataframe(gastos_mostrar[['fecha', 'categoria', 'descripcion', 'monto']], use_container_width=True)
+        st.markdown("---")
+
+        # SECCIÓN DIVIDIDA EN LOS 3 BLOQUES DE GASTOS
+        st.markdown(f"### 📋 Desglose de Gastos del Mes ({mes_seleccionado})")
+        
+        tab_b1, tab_b2, tab_b3 = st.tabs([
+            f"🥖 Producción y Operativos (${total_prod_operativos:,.2f})", 
+            f"🏢 Costos Fijos (${costos_fijos_mes:,.2f})", 
+            f"👤 Gastos Personales / Retiros (${total_personales:,.2f})"
+        ])
+
+        with tab_b1:
+            st.caption("Compras de materia prima, moldes, empaques y mano de obra por lote.")
+            if not gastos_prod_operativos.empty:
+                vista_po = gastos_prod_operativos.copy()
+                vista_po['fecha'] = vista_po['fecha'].dt.strftime('%Y-%m-%d')
+                st.dataframe(vista_po[['fecha', 'categoria', 'descripcion', 'monto']], use_container_width=True)
+            else:
+                st.info("No hay gastos operativos registrados en este periodo.")
+
+        with tab_b2:
+            st.caption("Gastos fijos base del negocio (Luz, gas base, estructura mensual).")
+            st.dataframe(costos_fijos_df, use_container_width=True)
+
+        with tab_b3:
+            st.caption("Retiros del negocio y consumos personales (ropa, cenas, medicinas, combustible no operativo).")
+            if not gastos_personales.empty:
+                vista_per = gastos_personales.copy()
+                vista_per['fecha'] = vista_per['fecha'].dt.strftime('%Y-%m-%d')
+                st.dataframe(vista_per[['fecha', 'categoria', 'descripcion', 'monto']], use_container_width=True)
+            else:
+                st.info("No se han registrado retiros ni gastos personales en este periodo.")
 
     except Exception as err:
         st.error(f"Error al cargar datos: {err}")
