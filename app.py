@@ -169,7 +169,7 @@ with tab_registro:
                 ["Insumos", "Operativos", "Empaques", "Gastos Personales", "Otros"], 
                 key="g_cat"
             )
-            desc_gasto = st.text_input("Descripción", placeholder="Ej. Harina, Gasolina personal, Medicina", key="g_desc")
+            desc_gasto = st.text_input("Descripción", placeholder="Ej. Harina, Gasolina, Medicina, etc.", key="g_desc")
             monto_gasto = st.number_input("Monto Total Pagado ($)", min_value=0.0, step=0.50, key="g_monto")
             submit_gasto = st.form_submit_button("💾 Guardar Gasto", use_container_width=True)
 
@@ -256,16 +256,16 @@ with tab_dashboard:
         ventas_mes = ventas_df[ventas_df['mes_año'] == mes_seleccionado]
         gastos_mes = gastos_diarios_df[gastos_diarios_df['mes_año'] == mes_seleccionado] if not gastos_diarios_df.empty else pd.DataFrame()
 
-        # CLASIFICACIÓN DE GASTOS EN LOS 3 BLOQUES
+        # CLASIFICACIÓN DE GASTOS EN 3 BLOQUES
         def clasificar_gasto(row):
             cat = str(row['categoria']).lower()
             desc = str(row['descripcion']).lower()
             
-            # 1. Gastos Personales / Retiros
+            # Gastos Personales / Retiros
             if 'personal' in cat or cat == 'otros' or any(p in desc for p in ['medicina', 'camisa', 'cena', 'temu', 'gasolina manuel', 'gas manuel']):
                 return 'Gastos Personales'
             
-            # 2. Producción y Operativos juntos
+            # Producción y Operativos
             if cat in ['insumos', 'operativos', 'empaques', 'produccion'] or 'lote' in desc or 'harina' in desc or 'huevo' in desc or 'leche' in desc:
                 return 'Producción y Operativos'
                 
@@ -287,15 +287,15 @@ with tab_dashboard:
         precio_unidad = ventas_mes['precio_venta_sin_iva'].iloc[0] if not ventas_mes.empty else 2.20
         ingresos_totales = unidades_vendidas * precio_unidad
         
-        # Egresos reales de la panadería (Fijos + Producción/Operativos)
-        egresos_negocio = costos_fijos_mes + total_prod_operativos
-        utilidad_operativa = ingresos_totales - egresos_negocio
-        dinero_libre_final = utilidad_operativa - total_personales
+        # 1. CARGA TOTAL COMPLETA (Fijos + Operativos + Personales)
+        egresos_totales_mes = costos_fijos_mes + total_prod_operativos + total_personales
+        utilidad_neta_real = ingresos_totales - egresos_totales_mes
 
-        punto_equilibrio = int(egresos_negocio / precio_unidad) if precio_unidad > 0 else 1
+        # 2. PUNTO DE EQUILIBRIO TOTAL
+        punto_equilibrio = int(egresos_totales_mes / precio_unidad) if precio_unidad > 0 else 1
         pct_cobertura = min(100.0, (unidades_vendidas / punto_equilibrio * 100)) if punto_equilibrio > 0 else 0
 
-        # TARJETAS KPI
+        # TARJETAS KPI CONSOLIDANDO TODOS LOS GASTOS
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.markdown(f"""
@@ -308,18 +308,18 @@ with tab_dashboard:
         with k2:
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-title">Costo Real Panadería</div>
-                <div class="kpi-value">${egresos_negocio:,.2f}</div>
-                <div class="kpi-subtitle kpi-neu">Fijos: ${costos_fijos_mes:,.2f} | Operación: ${total_prod_operativos:,.2f}</div>
+                <div class="kpi-title">Egresos Totales</div>
+                <div class="kpi-value">${egresos_totales_mes:,.2f}</div>
+                <div class="kpi-subtitle kpi-neu">Fijos: ${costos_fijos_mes:,.2f} | Compras: ${total_prod_operativos + total_personales:,.2f}</div>
             </div>
             """, unsafe_allow_html=True)
         with k3:
-            color_clase = "kpi-pos" if utilidad_operativa >= 0 else "kpi-neg"
+            color_clase = "kpi-pos" if utilidad_neta_real >= 0 else "kpi-neg"
             st.markdown(f"""
             <div class="kpi-card">
-                <div class="kpi-title">Ganancia Neta Negocio</div>
-                <div class="kpi-value {color_clase}">${utilidad_operativa:,.2f}</div>
-                <div class="kpi-subtitle kpi-neu">Retiros personales: ${total_personales:,.2f}</div>
+                <div class="kpi-title">Utilidad Neta Real</div>
+                <div class="kpi-value {color_clase}">${utilidad_neta_real:,.2f}</div>
+                <div class="kpi-subtitle {color_clase}">Flujo de caja libre</div>
             </div>
             """, unsafe_allow_html=True)
         with k4:
@@ -336,7 +336,7 @@ with tab_dashboard:
         # GRÁFICAS DE COBERTURA Y ENTREGAS
         g1, g2 = st.columns([1, 1])
         with g1:
-            st.markdown("##### 🎯 Cobertura de Costos de Panadería")
+            st.markdown("##### 🎯 Cobertura de Costos del Mes")
             df_pie = pd.DataFrame({
                 "Concepto": ["Cubierto", "Faltante"],
                 "Unidades": [unidades_vendidas, max(0, punto_equilibrio - unidades_vendidas)]
@@ -393,7 +393,7 @@ with tab_dashboard:
             st.dataframe(costos_fijos_df, use_container_width=True)
 
         with tab_b3:
-            st.caption("Retiros del negocio y consumos personales (ropa, cenas, medicinas, combustible no operativo).")
+            st.caption("Retiros del negocio y consumos personales (ropa, cenas, medicinas, combustible personal).")
             if not gastos_personales.empty:
                 vista_per = gastos_personales.copy()
                 vista_per['fecha'] = vista_per['fecha'].dt.strftime('%Y-%m-%d')
