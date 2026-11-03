@@ -169,7 +169,7 @@ with tab_registro:
                 ["Insumos", "Operativos", "Empaques", "Gastos Personales", "Otros"], 
                 key="g_cat"
             )
-            desc_gasto = st.text_input("Descripción", placeholder="Ej. Harina, Gasolina, Medicina, etc.", key="g_desc")
+            desc_gasto = st.text_input("Descripción", placeholder="Ej. Moldes 100u, Harina, Gasolina, Medicina", key="g_desc")
             monto_gasto = st.number_input("Monto Total Pagado ($)", min_value=0.0, step=0.50, key="g_monto")
             submit_gasto = st.form_submit_button("💾 Guardar Gasto", use_container_width=True)
 
@@ -256,17 +256,17 @@ with tab_dashboard:
         ventas_mes = ventas_df[ventas_df['mes_año'] == mes_seleccionado]
         gastos_mes = gastos_diarios_df[gastos_diarios_df['mes_año'] == mes_seleccionado] if not gastos_diarios_df.empty else pd.DataFrame()
 
-        # CLASIFICACIÓN DE GASTOS EN 3 BLOQUES
+        # CLASIFICACIÓN DE GASTOS EN LOS 3 BLOQUES
         def clasificar_gasto(row):
             cat = str(row['categoria']).lower()
             desc = str(row['descripcion']).lower()
             
-            # Gastos Personales / Retiros
+            # 1. Gastos Personales / Retiros
             if 'personal' in cat or cat == 'otros' or any(p in desc for p in ['medicina', 'camisa', 'cena', 'temu', 'gasolina manuel', 'gas manuel']):
                 return 'Gastos Personales'
             
-            # Producción y Operativos
-            if cat in ['insumos', 'operativos', 'empaques', 'produccion'] or 'lote' in desc or 'harina' in desc or 'huevo' in desc or 'leche' in desc:
+            # 2. Producción y Operativos
+            if cat in ['insumos', 'operativos', 'empaques', 'produccion'] or any(p in desc for p in ['lote', 'harina', 'huevo', 'leche', 'molde', 'empaque', 'baterias']):
                 return 'Producción y Operativos'
                 
             return 'Producción y Operativos'
@@ -281,21 +281,30 @@ with tab_dashboard:
 
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
-        costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
+
+        # CONDICIÓN HISTÓRICA: PROTECCIÓN DE MESES ANTERIORES
+        # Hasta 2026-10 se mantienen los fijos originales con empaques ($241.50)
+        # Desde 2026-11 solo se cobra Luz y Gas ($54.00)
+        if mes_seleccionado <= '2026-10':
+            costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
+            df_fijos_vista = costos_fijos_df.copy()
+        else:
+            mask_servicios = costos_fijos_df['concepto'].astype(str).str.lower().str.contains('luz|gas')
+            costos_fijos_mes = costos_fijos_df[mask_servicios]['monto_mensual'].sum()
+            df_fijos_vista = costos_fijos_df[mask_servicios].copy()
 
         unidades_vendidas = int(ventas_mes['unidades_vendidas'].sum())
         precio_unidad = ventas_mes['precio_venta_sin_iva'].iloc[0] if not ventas_mes.empty else 2.20
         ingresos_totales = unidades_vendidas * precio_unidad
         
-        # 1. CARGA TOTAL COMPLETA (Fijos + Operativos + Personales)
+        # Carga completa: Fijos + Compras Operativas + Retiros Personales
         egresos_totales_mes = costos_fijos_mes + total_prod_operativos + total_personales
         utilidad_neta_real = ingresos_totales - egresos_totales_mes
 
-        # 2. PUNTO DE EQUILIBRIO TOTAL
         punto_equilibrio = int(egresos_totales_mes / precio_unidad) if precio_unidad > 0 else 1
         pct_cobertura = min(100.0, (unidades_vendidas / punto_equilibrio * 100)) if punto_equilibrio > 0 else 0
 
-        # TARJETAS KPI CONSOLIDANDO TODOS LOS GASTOS
+        # TARJETAS KPI
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.markdown(f"""
@@ -333,7 +342,7 @@ with tab_dashboard:
 
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-        # GRÁFICAS DE COBERTURA Y ENTREGAS
+        # GRÁFICAS
         g1, g2 = st.columns([1, 1])
         with g1:
             st.markdown("##### 🎯 Cobertura de Costos del Mes")
@@ -389,8 +398,8 @@ with tab_dashboard:
                 st.info("No hay gastos operativos registrados en este periodo.")
 
         with tab_b2:
-            st.caption("Gastos fijos base del negocio (Luz, gas base, estructura mensual).")
-            st.dataframe(costos_fijos_df, use_container_width=True)
+            st.caption("Gastos fijos base del negocio.")
+            st.dataframe(df_fijos_vista, use_container_width=True)
 
         with tab_b3:
             st.caption("Retiros del negocio y consumos personales (ropa, cenas, medicinas, combustible personal).")
