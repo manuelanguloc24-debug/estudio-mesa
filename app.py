@@ -127,7 +127,6 @@ def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
             timeout=15,
             allow_redirects=True
         )
-        
         try:
             res_json = resp.json()
             if res_json.get("status") == "success":
@@ -138,7 +137,6 @@ def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
             if "success" in resp.text.lower():
                 return True, "Actualizado correctamente"
             return False, f"Respuesta no válida del servidor ({resp.status_code}): {resp.text[:150]}"
-            
     except Exception as err:
         return False, f"Error de conexión: {str(err)}"
 
@@ -311,14 +309,18 @@ with tab_registro:
         except Exception as e:
             st.error(f"Error al leer gastos: {e}")
 
-# --- PESTAÑA: GESTIÓN RÁPIDA DE FACTURAS ---
+# --- PESTAÑA: GESTIÓN DE FACTURAS POR MES ---
 with tab_facturas:
-    st.markdown("#### 📑 Gestión Ágil de Facturación y Cobros")
-    st.caption("Supervisa tus cuentas por cobrar y cambia el estado de cualquier factura con un clic.")
+    st.markdown("#### 📑 Gestión de Facturación y Cobros por Mes")
+    st.caption("Filtra por periodo mensual para supervisar tus cobros y cambiar el estado de las facturas.")
 
     try:
         v_fac_df = cargar_tabla("Ventas")
         if not v_fac_df.empty:
+            v_fac_df['fecha_dt'] = pd.to_datetime(v_fac_df['fecha'], errors='coerce')
+            v_fac_df['mes_año'] = v_fac_df['fecha_dt'].dt.strftime('%Y-%m')
+
+            # Manejo flexible de producto
             if 'id_producto' in v_fac_df.columns:
                 v_fac_df['producto_mostrado'] = v_fac_df['id_producto']
             elif 'producto' in v_fac_df.columns:
@@ -326,10 +328,14 @@ with tab_facturas:
             else:
                 v_fac_df['producto_mostrado'] = v_fac_df.iloc[:, 2] if len(v_fac_df.columns) > 2 else "PROD01"
 
+            # Las facturas anteriores vacías o previas a noviembre quedan como Cobrada
             if 'estado' not in v_fac_df.columns:
                 v_fac_df['estado'] = 'Cobrada'
             else:
                 v_fac_df['estado'] = v_fac_df['estado'].fillna('Cobrada')
+                # Si una fecha es anterior a noviembre 2026 y no tiene estado explícito "Pendiente", es Cobrada
+                mask_ant = (v_fac_df['mes_año'] < '2026-11') & (v_fac_df['estado'].astype(str).str.strip().str.lower() != 'pendiente')
+                v_fac_df.loc[mask_ant, 'estado'] = 'Cobrada'
 
             col_precio = [c for c in v_fac_df.columns if 'precio' in c]
             col_unidades = [c for c in v_fac_df.columns if 'unidad' in c or 'cant' in c]
@@ -342,44 +348,52 @@ with tab_facturas:
             v_fac_df['total_facturado'] = v_fac_df['unidades_num'] * v_fac_df['precio_num']
             v_fac_df['fila_sheet'] = range(2, len(v_fac_df) + 2)
 
-            pendientes = v_fac_df[v_fac_df['estado'].astype(str).str.strip().str.lower() == 'pendiente']
-            cobradas = v_fac_df[v_fac_df['estado'].astype(str).str.strip().str.lower() != 'pendiente']
+            # SELECTOR DE MES PARA FACTURAS
+            meses_fac_disp = sorted([m for m in v_fac_df['mes_año'].dropna().unique()], reverse=True)
+            col_m1, col_m2 = st.columns([1.5, 2.5])
+            with col_m1:
+                mes_fac_sel = st.selectbox("📅 Selecciona el Mes a Gestionar:", meses_fac_disp, key="mes_fac_filtro")
+
+            df_mes_actual = v_fac_df[v_fac_df['mes_año'] == mes_fac_sel]
+            pendientes = df_mes_actual[df_mes_actual['estado'].astype(str).str.strip().str.lower() == 'pendiente']
+            cobradas = df_mes_actual[df_mes_actual['estado'].astype(str).str.strip().str.lower() != 'pendiente']
 
             col_cf1, col_cf2 = st.columns(2)
             with col_cf1:
                 total_pendiente = pendientes['total_facturado'].sum()
-                st.metric("Cartera por Cobrar", f"${total_pendiente:,.2f}", f"{len(pendientes)} facturas pendientes", delta_color="inverse")
+                st.metric(f"Por Cobrar ({mes_fac_sel})", f"${total_pendiente:,.2f}", f"{len(pendientes)} facturas pendientes", delta_color="inverse")
             with col_cf2:
                 total_cobrado = cobradas['total_facturado'].sum()
-                st.metric("Total Cobrado Histórico", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
+                st.metric(f"Total Cobrado ({mes_fac_sel})", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
 
             st.markdown("---")
             
-            st.markdown("##### ⚡ Cambiar Estado de Factura")
+            # SELECTOR RÁPIDO PARA CAMBIAR ESTADO
+            st.markdown(f"##### ⚡ Cambiar Estado de Factura en **{mes_fac_sel}**")
             
             col_sel1, col_sel2 = st.columns([2.5, 1])
             with col_sel1:
-                tipo_lista = st.radio("¿Qué facturas deseas listar para editar?", ["Pendientes de Cobro", "Todas las Facturas"], horizontal=True)
+                tipo_lista = st.radio("Listar:", ["Pendientes de Cobro", "Todas las Entregas del Mes"], horizontal=True, key="r_tipo_l")
                 
-                df_para_editar = pendientes if tipo_lista == "Pendientes de Cobro" else v_fac_df
+                df_para_editar = pendientes if tipo_lista == "Pendientes de Cobro" else df_mes_actual
                 
                 if not df_para_editar.empty:
                     opciones_facturas = {
-                        f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} (Estado actual: {row['estado']})": (row['fila_sheet'], row['estado'])
+                        f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} ({row['estado']})": (row['fila_sheet'], row['estado'])
                         for _, row in df_para_editar.iterrows()
                     }
-                    factura_elegida = st.selectbox("Selecciona la entrega:", options=list(opciones_facturas.keys()))
+                    factura_elegida = st.selectbox("Selecciona la entrega:", options=list(opciones_facturas.keys()), key="sel_fac_item")
                 else:
                     factura_elegida = None
-                    st.success("🎉 No hay facturas pendientes en este momento.")
+                    st.success(f"🎉 No hay facturas pendientes en {mes_fac_sel}.")
 
             with col_sel2:
                 if factura_elegida:
                     fila_destino, estado_actual = opciones_facturas[factura_elegida]
                     st.write("")
                     st.write("")
-                    nuevo_estado = st.selectbox("Nuevo Estado:", ["Cobrada", "Pendiente"])
-                    if st.button("💾 Aplicar Cambio", use_container_width=True):
+                    nuevo_estado = st.selectbox("Nuevo Estado:", ["Cobrada", "Pendiente"], key="sel_nuevo_est")
+                    if st.button("💾 Aplicar Cambio", use_container_width=True, key="btn_guardar_est"):
                         exito, mensaje = actualizar_estado_factura(fila_destino, nuevo_estado)
                         if exito:
                             st.success(f"✅ {mensaje}")
@@ -388,9 +402,9 @@ with tab_facturas:
                             st.error(f"❌ {mensaje}")
 
             st.markdown("---")
-            st.markdown("##### 📜 Historial Completo de Entregas")
+            st.markdown(f"##### 📜 Entregas de {mes_fac_sel}")
             
-            tabla_vista = v_fac_df.rename(columns={
+            tabla_vista = df_mes_actual.rename(columns={
                 'fecha': 'Fecha',
                 'cliente': 'Cliente / Correlativo',
                 'producto_mostrado': 'Producto',
@@ -458,7 +472,7 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
-        # Histórico: hasta 2026-10 incluye empaques ($241.50); desde 2026-11 solo Luz y Gas ($54.00)[cite: 1, 4]
+        # Histórico: hasta 2026-10 incluye empaques ($241.50); desde 2026-11 solo Luz y Gas ($54.00)
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
