@@ -94,7 +94,7 @@ def limpiar_numero(columna):
 
 def enviar_registro(pestaña, fila):
     try:
-        payload = {"accion": "agregar", "pestaña": pestaña, "fila": fila}
+        payload = {"accion": "agregar", "pestana": pestaña, "pestaña": pestaña, "fila": fila}
         headers = {"Content-Type": "application/json"}
         resp = requests.post(
             WEBHOOK_URL, 
@@ -114,6 +114,7 @@ def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
     try:
         payload = {
             "accion": "marcar_pagada", 
+            "pestana": "Ventas", 
             "pestaña": "Ventas", 
             "fila_index": int(fila_index), 
             "estado": nuevo_estado
@@ -126,18 +127,25 @@ def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
             timeout=15,
             allow_redirects=True
         )
+        
+        # Diagnóstico transparente de respuesta
         try:
             res_json = resp.json()
-            return res_json.get("status") == "success"
+            if res_json.get("status") == "success":
+                return True, res_json.get("message", "Actualizado con éxito")
+            else:
+                return False, f"Respuesta de Google: {res_json.get('message')}"
         except Exception:
-            return "success" in resp.text.lower()
+            if "success" in resp.text.lower():
+                return True, "Actualizado correctamente"
+            return False, f"Respuesta no válida del servidor ({resp.status_code}): {resp.text[:150]}"
+            
     except Exception as err:
-        st.error(f"Error de conexión: {err}")
-        return False
+        return False, f"Error de red o conexión: {str(err)}"
 
 def borrar_fila_remota(pestaña, fila_index):
     try:
-        payload = {"accion": "borrar", "pestaña": pestaña, "fila_index": int(fila_index)}
+        payload = {"accion": "borrar", "pestana": pestaña, "pestaña": pestaña, "fila_index": int(fila_index)}
         headers = {"Content-Type": "application/json"}
         resp = requests.post(
             WEBHOOK_URL, 
@@ -181,7 +189,6 @@ with tab_registro:
     with col_form1:
         st.markdown("##### 🥖 Registrar Entrega / Factura")
         
-        # Correlativo automático con formato 013-2026 en adelante
         siguiente_correlativo = "013-2026"
         try:
             v_check = cargar_tabla("Ventas")
@@ -227,7 +234,7 @@ with tab_registro:
                         st.success(f"✅ Factura {num_factura} registrada ({unidades_venta} u.) como {estado_cobro}")
                         st.cache_data.clear()
                     else:
-                        st.error("Error al registrar la factura.")
+                        st.error("Error al registrar la factura en Google Sheets.")
                 else:
                     st.error("Ingresa el nombre del cliente.")
 
@@ -348,6 +355,7 @@ with tab_facturas:
                 st.metric("Total Cobrado Histórico", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
 
             st.markdown("---")
+            
             st.markdown("##### ⚡ Cambiar Estado de Factura")
             
             col_sel1, col_sel2 = st.columns([2.5, 1])
@@ -358,7 +366,7 @@ with tab_facturas:
                 
                 if not df_para_editar.empty:
                     opciones_facturas = {
-                        f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} (Actualmente: {row['estado']})": (row['fila_sheet'], row['estado'])
+                        f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} (Estado actual: {row['estado']})": (row['fila_sheet'], row['estado'])
                         for _, row in df_para_editar.iterrows()
                     }
                     factura_elegida = st.selectbox("Selecciona la entrega:", options=list(opciones_facturas.keys()))
@@ -373,11 +381,12 @@ with tab_facturas:
                     st.write("")
                     nuevo_estado = st.selectbox("Nuevo Estado:", ["Cobrada", "Pendiente"])
                     if st.button("💾 Aplicar Cambio", use_container_width=True):
-                        if actualizar_estado_factura(fila_destino, nuevo_estado):
-                            st.success(f"¡Fila #{fila_destino} actualizada a {nuevo_estado}!")
+                        exito, mensaje = actualizar_estado_factura(fila_destino, nuevo_estado)
+                        if exito:
+                            st.success(f"✅ {mensaje}")
                             st.cache_data.clear()
                         else:
-                            st.error("Error al actualizar la factura en Google Sheets.")
+                            st.error(f"❌ {mensaje}")
 
             st.markdown("---")
             st.markdown("##### 📜 Historial Completo de Entregas")
@@ -450,7 +459,6 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
-        # Histórico: hasta 2026-10 incluye empaques ($241.50); desde 2026-11 solo Luz y Gas ($54.00)
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
