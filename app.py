@@ -186,18 +186,27 @@ with tab_registro:
     with col_form1:
         st.markdown("##### 🥖 Registrar Entrega / Factura")
         
+        # LÓGICA DE CORRELATIVO REUTILIZABLE TRAS BORRADO
+        # Base inicial: 013-2026. Si se borra la 016, vuelve a dar la 016
         siguiente_correlativo = "013-2026"
         try:
             v_check = cargar_tabla("Ventas")
-            if 'cliente' in v_check.columns:
-                numeros_encontrados = []
-                for item in v_check['cliente'].dropna().astype(str):
-                    match = re.search(r'(\d{3,4})-2026', item)
-                    if match:
-                        numeros_encontrados.append(int(match.group(1)))
-                if numeros_encontrados:
-                    max_num = max(numeros_encontrados)
-                    siguiente_correlativo = f"{max_num + 1:03d}-2026"
+            if 'cliente' in v_check.columns and not v_check.empty:
+                nums = []
+                for val in v_check['cliente'].dropna().astype(str):
+                    m = re.search(r'(\d{3,4})-2026', val)
+                    if m:
+                        nums.append(int(m.group(1)))
+                
+                if nums:
+                    # Toma el número más alto efectivamente guardado en la hoja
+                    max_guardado = max(nums)
+                    siguiente_correlativo = f"{max_guardado + 1:03d}-2026"
+                else:
+                    # Conteo de seguridad si las primeras de noviembre aún no tenían el texto escrito
+                    v_check['fecha_dt'] = pd.to_datetime(v_check['fecha'], errors='coerce')
+                    ventas_nov = v_check[v_check['fecha_dt'].dt.strftime('%Y-%m') == '2026-11']
+                    siguiente_correlativo = f"{13 + len(ventas_nov):03d}-2026"
         except Exception:
             siguiente_correlativo = "013-2026"
 
@@ -228,7 +237,7 @@ with tab_registro:
                 if cliente_venta:
                     cliente_completo = f"{cliente_venta} ({num_factura})" if num_factura else cliente_venta
                     if enviar_registro("Ventas", [str(fecha_venta), cliente_completo, prod_venta, int(unidades_venta), float(precio_venta), estado_cobro]):
-                        st.success(f"✅ Factura {num_factura} registrada ({unidades_venta} u.) como {estado_cobro}")
+                        st.success(f"✅ Factura {num_factura} guardada ({unidades_venta} u.) como {estado_cobro}")
                         st.cache_data.clear()
                     else:
                         st.error("Error al registrar la factura en Google Sheets.")
@@ -328,12 +337,11 @@ with tab_facturas:
             else:
                 v_fac_df['producto_mostrado'] = v_fac_df.iloc[:, 2] if len(v_fac_df.columns) > 2 else "PROD01"
 
-            # Las facturas anteriores vacías o previas a noviembre quedan como Cobrada
+            # Facturas anteriores se asientan como Cobrada
             if 'estado' not in v_fac_df.columns:
                 v_fac_df['estado'] = 'Cobrada'
             else:
                 v_fac_df['estado'] = v_fac_df['estado'].fillna('Cobrada')
-                # Si una fecha es anterior a noviembre 2026 y no tiene estado explícito "Pendiente", es Cobrada
                 mask_ant = (v_fac_df['mes_año'] < '2026-11') & (v_fac_df['estado'].astype(str).str.strip().str.lower() != 'pendiente')
                 v_fac_df.loc[mask_ant, 'estado'] = 'Cobrada'
 
@@ -347,6 +355,24 @@ with tab_facturas:
             v_fac_df['unidades_num'] = pd.to_numeric(v_fac_df[u_col_name], errors='coerce').fillna(0)
             v_fac_df['total_facturado'] = v_fac_df['unidades_num'] * v_fac_df['precio_num']
             v_fac_df['fila_sheet'] = range(2, len(v_fac_df) + 2)
+
+            # EXTRACCIÓN Y VISUALIZACIÓN DEL CORRELATIVO
+            def obtener_correlativo(row):
+                texto_cliente = str(row['cliente'])
+                m = re.search(r'(\d{3,4}-2026)', texto_cliente)
+                if m:
+                    return m.group(1)
+                
+                f_str = str(row['fecha'])
+                if '2026-11-03' in f_str:
+                    return '013-2026'
+                elif '2026-11-07' in f_str:
+                    return '014-2026'
+                elif '2026-11' in str(row['mes_año']):
+                    return f"{row['fila_sheet'] - 20:03d}-2026"
+                return "-"
+
+            v_fac_df['num_correlativo'] = v_fac_df.apply(obtener_correlativo, axis=1)
 
             # SELECTOR DE MES PARA FACTURAS
             meses_fac_disp = sorted([m for m in v_fac_df['mes_año'].dropna().unique()], reverse=True)
@@ -379,7 +405,7 @@ with tab_facturas:
                 
                 if not df_para_editar.empty:
                     opciones_facturas = {
-                        f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} ({row['estado']})": (row['fila_sheet'], row['estado'])
+                        f"Factura: {row['num_correlativo']} | Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} ({row['estado']})": (row['fila_sheet'], row['estado'])
                         for _, row in df_para_editar.iterrows()
                     }
                     factura_elegida = st.selectbox("Selecciona la entrega:", options=list(opciones_facturas.keys()), key="sel_fac_item")
@@ -406,14 +432,15 @@ with tab_facturas:
             
             tabla_vista = df_mes_actual.rename(columns={
                 'fecha': 'Fecha',
-                'cliente': 'Cliente / Correlativo',
+                'num_correlativo': 'Factura / Correlativo',
+                'cliente': 'Cliente',
                 'producto_mostrado': 'Producto',
                 'unidades_num': 'Porciones',
                 'precio_num': 'Precio ($)',
                 'total_facturado': 'Total ($)',
                 'estado': 'Estado'
             })
-            columnas_finales = ['Fecha', 'Cliente / Correlativo', 'Producto', 'Porciones', 'Precio ($)', 'Total ($)', 'Estado']
+            columnas_finales = ['Fecha', 'Factura / Correlativo', 'Cliente', 'Producto', 'Porciones', 'Precio ($)', 'Total ($)', 'Estado']
             st.dataframe(tabla_vista[columnas_finales], use_container_width=True)
 
     except Exception as e:
@@ -472,7 +499,7 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
-        # Histórico: hasta 2026-10 incluye empaques ($241.50); desde 2026-11 solo Luz y Gas ($54.00)
+        # Histórico: hasta 2026-10 incluye empaques ($241.50)[cite: 1]; desde 2026-11 solo Luz y Gas ($54.00)[cite: 1]
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
