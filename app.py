@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 SHEET_ID = "1skUG3vKZwXve0kvDSVUAl1Qhzke-oLH0UNYwMdP9SAc"
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbxFcWtq7oIgD_LiupwWhaJ5HD_wxJmtbnNJQXQ_wJC99rz4_b8QA0I3-Gz6IkVXfIHnMw/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwb3Ic2hUFlAhECZvmvSldS5olEiw3z4yJYlgGqe2JqsrCk95zqX3epfY7OTL_qE5k-3w/exec"
 
 st.markdown("""
 <style>
@@ -128,7 +128,6 @@ def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
             allow_redirects=True
         )
         
-        # Diagnóstico transparente de respuesta
         try:
             res_json = resp.json()
             if res_json.get("status") == "success":
@@ -141,7 +140,7 @@ def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
             return False, f"Respuesta no válida del servidor ({resp.status_code}): {resp.text[:150]}"
             
     except Exception as err:
-        return False, f"Error de red o conexión: {str(err)}"
+        return False, f"Error de conexión: {str(err)}"
 
 def borrar_fila_remota(pestaña, fila_index):
     try:
@@ -459,6 +458,7 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
+        # Histórico: hasta 2026-10 incluye empaques ($241.50); desde 2026-11 solo Luz y Gas ($54.00)[cite: 1, 4]
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
