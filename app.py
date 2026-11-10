@@ -1,7 +1,8 @@
 import sys
 import datetime
-import requests
+import json
 import re
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -94,24 +95,62 @@ def limpiar_numero(columna):
 def enviar_registro(pestaña, fila):
     try:
         payload = {"accion": "agregar", "pestaña": pestaña, "fila": fila}
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        return resp.json().get("status") == "success"
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(
+            WEBHOOK_URL, 
+            data=json.dumps(payload), 
+            headers=headers, 
+            timeout=15,
+            allow_redirects=True
+        )
+        try:
+            return resp.json().get("status") == "success"
+        except Exception:
+            return "success" in resp.text.lower()
     except Exception:
         return False
 
 def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
     try:
-        payload = {"accion": "marcar_pagada", "pestaña": "Ventas", "fila_index": fila_index, "estado": nuevo_estado}
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        return resp.json().get("status") == "success"
-    except Exception:
+        payload = {
+            "accion": "marcar_pagada", 
+            "pestaña": "Ventas", 
+            "fila_index": int(fila_index), 
+            "estado": nuevo_estado
+        }
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(
+            WEBHOOK_URL, 
+            data=json.dumps(payload), 
+            headers=headers, 
+            timeout=15,
+            allow_redirects=True
+        )
+        try:
+            res_json = resp.json()
+            return res_json.get("status") == "success"
+        except Exception:
+            return "success" in resp.text.lower()
+    except Exception as err:
+        st.error(f"Error de conexión: {err}")
         return False
 
 def borrar_fila_remota(pestaña, fila_index):
     try:
-        payload = {"accion": "borrar", "pestaña": pestaña, "fila_index": fila_index}
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        return resp.json().get("status") == "success"
+        payload = {"accion": "borrar", "pestaña": pestaña, "fila_index": int(fila_index)}
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(
+            WEBHOOK_URL, 
+            data=json.dumps(payload), 
+            headers=headers, 
+            timeout=15,
+            allow_redirects=True
+        )
+        try:
+            res_json = resp.json()
+            return res_json.get("status") == "success"
+        except Exception:
+            return "success" in resp.text.lower()
     except Exception:
         return False
 
@@ -142,7 +181,7 @@ with tab_registro:
     with col_form1:
         st.markdown("##### 🥖 Registrar Entrega / Factura")
         
-        # Correlativo automático con formato 013-2026
+        # Correlativo automático con formato 013-2026 en adelante
         siguiente_correlativo = "013-2026"
         try:
             v_check = cargar_tabla("Ventas")
@@ -274,22 +313,18 @@ with tab_facturas:
     try:
         v_fac_df = cargar_tabla("Ventas")
         if not v_fac_df.empty:
-            # Normalizar columna de producto de forma flexible
             if 'id_producto' in v_fac_df.columns:
                 v_fac_df['producto_mostrado'] = v_fac_df['id_producto']
             elif 'producto' in v_fac_df.columns:
                 v_fac_df['producto_mostrado'] = v_fac_df['producto']
             else:
-                # Tomar la 3ra columna disponible si existe
                 v_fac_df['producto_mostrado'] = v_fac_df.iloc[:, 2] if len(v_fac_df.columns) > 2 else "PROD01"
 
-            # Normalizar columna de estado
             if 'estado' not in v_fac_df.columns:
                 v_fac_df['estado'] = 'Cobrada'
             else:
                 v_fac_df['estado'] = v_fac_df['estado'].fillna('Cobrada')
 
-            # Normalizar precios y cantidades
             col_precio = [c for c in v_fac_df.columns if 'precio' in c]
             col_unidades = [c for c in v_fac_df.columns if 'unidad' in c or 'cant' in c]
             
@@ -313,8 +348,6 @@ with tab_facturas:
                 st.metric("Total Cobrado Histórico", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
 
             st.markdown("---")
-            
-            # SELECTOR RÁPIDO PARA CAMBIAR ESTADO
             st.markdown("##### ⚡ Cambiar Estado de Factura")
             
             col_sel1, col_sel2 = st.columns([2.5, 1])
@@ -349,7 +382,6 @@ with tab_facturas:
             st.markdown("---")
             st.markdown("##### 📜 Historial Completo de Entregas")
             
-            # Tabla visual con nombres de columnas estables y limpios
             tabla_vista = v_fac_df.rename(columns={
                 'fecha': 'Fecha',
                 'cliente': 'Cliente / Correlativo',
@@ -378,7 +410,6 @@ with tab_dashboard:
         except Exception:
             gastos_diarios_df = pd.DataFrame(columns=['fecha', 'categoria', 'descripcion', 'monto'])
 
-        # Detección segura de columnas en ventas
         col_precio = [c for c in ventas_df.columns if 'precio' in c]
         col_unidades = [c for c in ventas_df.columns if 'unidad' in c or 'cant' in c]
         p_col_name = col_precio[0] if col_precio else ventas_df.columns[4]
@@ -419,7 +450,7 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
-        # Histórico: hasta 2026-10 incluye empaques ($241.50)[cite: 1, 2]; desde 2026-11 solo Luz y Gas ($54.00)[cite: 1, 2]
+        # Histórico: hasta 2026-10 incluye empaques ($241.50); desde 2026-11 solo Luz y Gas ($54.00)
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
