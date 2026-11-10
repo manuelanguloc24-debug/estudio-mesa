@@ -1,6 +1,7 @@
 import sys
 import datetime
 import requests
+import re
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -98,9 +99,9 @@ def enviar_registro(pestaña, fila):
     except Exception:
         return False
 
-def marcar_factura_pagada(fila_index):
+def actualizar_estado_factura(fila_index, nuevo_estado="Cobrada"):
     try:
-        payload = {"accion": "marcar_pagada", "pestaña": "Ventas", "fila_index": fila_index}
+        payload = {"accion": "marcar_pagada", "pestaña": "Ventas", "fila_index": fila_index, "estado": nuevo_estado}
         resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
         return resp.json().get("status") == "success"
     except Exception:
@@ -130,10 +131,10 @@ if st.sidebar.button("🔄 Sincronizar Datos", use_container_width=True):
 tab_dashboard, tab_registro, tab_facturas = st.tabs([
     "📊 Balance Financiero", 
     "📝 Registrar Operación", 
-    "📑 Facturas & Cuentas por Cobrar"
+    "📑 Facturación & Cobros"
 ])
 
-# --- PESTAÑA 2: REGISTRO RÁPIDO ---
+# --- PESTAÑA: REGISTRO DE OPERACIONES ---
 with tab_registro:
     st.markdown("#### 📝 Registro Rápido de Operaciones")
     col_form1, col_form2 = st.columns(2)
@@ -141,21 +142,29 @@ with tab_registro:
     with col_form1:
         st.markdown("##### 🥖 Registrar Entrega / Factura")
         
-        # Sugerir correlativo automático en base al histórico
+        # Lógica para correlativo con formato 013-2026
+        siguiente_correlativo = "013-2026"
         try:
             v_check = cargar_tabla("Ventas")
-            siguiente_correlativo = f"FAC-{len(v_check) + 1:03d}"
+            numeros_encontrados = []
+            for item in v_check['cliente'].dropna().astype(str):
+                match = re.search(r'(\d{3,4})-2026', item)
+                if match:
+                    numeros_encontrados.append(int(match.group(1)))
+            if numeros_encontrados:
+                max_num = max(numeros_encontrados)
+                siguiente_correlativo = f"{max_num + 1:03d}-2026"
         except Exception:
-            siguiente_correlativo = "FAC-001"
+            siguiente_correlativo = "013-2026"
 
         with st.form("form_venta", clear_on_submit=True):
             col_fac1, col_fac2 = st.columns(2)
             with col_fac1:
                 fecha_venta = st.date_input("Fecha de Entrega", datetime.date.today(), key="v_fecha")
             with col_fac2:
-                num_factura = st.text_input("N° Factura / Correlativo", value=siguiente_correlativo, key="v_correlativo")
+                num_factura = st.text_input("N° Correlativo", value=siguiente_correlativo, key="v_correlativo")
 
-            cliente_venta = st.text_input("Cliente", placeholder="Ej. Ernestina Castro", key="v_cli")
+            cliente_venta = st.text_input("Cliente", value="Ernestina Castro", key="v_cli")
             
             col_v1, col_v2 = st.columns(2)
             with col_v1:
@@ -167,16 +176,15 @@ with tab_registro:
             with col_p1:
                 precio_venta = st.number_input("Precio Unitario ($)", min_value=0.0, step=0.10, value=2.20, key="v_precio")
             with col_p2:
-                estado_cobro = st.selectbox("Estado de Cobro", ["Cobrada", "Pendiente"], key="v_estado")
+                estado_cobro = st.selectbox("Estado Inicial", ["Pendiente", "Cobrada"], key="v_estado")
 
             submit_venta = st.form_submit_button("💾 Guardar Factura / Venta", use_container_width=True)
 
             if submit_venta:
                 if cliente_venta:
-                    # Guardamos el formato: [Fecha, Cliente (con correlativo), Producto, Cantidad, Precio, Estado]
                     cliente_completo = f"{cliente_venta} ({num_factura})" if num_factura else cliente_venta
                     if enviar_registro("Ventas", [str(fecha_venta), cliente_completo, prod_venta, int(unidades_venta), float(precio_venta), estado_cobro]):
-                        st.success(f"✅ Factura {num_factura} registrada ({unidades_venta} u.) - {estado_cobro}")
+                        st.success(f"✅ Factura {num_factura} registrada ({unidades_venta} u.) como {estado_cobro}")
                         st.cache_data.clear()
                     else:
                         st.error("Error al registrar la factura.")
@@ -257,10 +265,10 @@ with tab_registro:
         except Exception as e:
             st.error(f"Error al leer gastos: {e}")
 
-# --- PESTAÑA 3: GESTIÓN DE FACTURAS & COBROS ---
+# --- PESTAÑA: GESTIÓN RÁPIDA DE FACTURAS ---
 with tab_facturas:
-    st.markdown("#### 📑 Facturas y Estado de Cobros")
-    st.caption("Supervisa los pedidos entregados y gestiona facturas pendientes de pago.")
+    st.markdown("#### 📑 Gestión Ágil de Facturación y Cobros")
+    st.caption("Selecciona cualquier factura pendiente para marcarla como cobrada en un toque.")
 
     try:
         v_fac_df = cargar_tabla("Ventas")
@@ -275,41 +283,55 @@ with tab_facturas:
             v_fac_df['total_facturado'] = v_fac_df['unidades_vendidas'] * v_fac_df['precio_venta_sin_iva']
             v_fac_df['fila_sheet'] = range(2, len(v_fac_df) + 2)
 
-            pendientes = v_fac_df[v_fac_df['estado'].str.lower() == 'pendiente']
-            cobradas = v_fac_df[v_fac_df['estado'].str.lower() != 'pendiente']
+            pendientes = v_fac_df[v_fac_df['estado'].str.strip().str.lower() == 'pendiente']
+            cobradas = v_fac_df[v_fac_df['estado'].str.strip().str.lower() != 'pendiente']
 
             col_cf1, col_cf2 = st.columns(2)
             with col_cf1:
                 total_pendiente = pendientes['total_facturado'].sum()
-                st.metric("Por Cobrar (Cartera Pendiente)", f"${total_pendiente:,.2f}", f"{len(pendientes)} facturas por cobrar", delta_color="inverse")
+                st.metric("Cartera por Cobrar", f"${total_pendiente:,.2f}", f"{len(pendientes)} facturas pendientes", delta_color="inverse")
             with col_cf2:
                 total_cobrado = cobradas['total_facturado'].sum()
-                st.metric("Total Cobrado Histórico", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
+                st.metric("Total Cobrado", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
 
             st.markdown("---")
-            st.markdown("##### ⏳ Facturas Pendientes de Cobro")
+            
+            st.markdown("##### ⚡ Cambiar Estado de Factura")
             if not pendientes.empty:
-                for _, row in pendientes.iterrows():
-                    c_info, c_btn = st.columns([3, 1])
-                    with c_info:
-                        st.write(f"📅 **{row['fecha']}** | **{row['cliente']}** | {row['unidades_vendidas']} u. $\\rightarrow$ **${row['total_facturado']:,.2f}**")
-                    with c_btn:
-                        if st.button("✅ Marcar Pagada", key=f"pagar_{row['fila_sheet']}", use_container_width=True):
-                            if marcar_factura_pagada(row['fila_sheet']):
-                                st.success("¡Factura cobrada!")
-                                st.cache_data.clear()
-                            else:
-                                st.error("Error al actualizar estado.")
+                opciones_facturas = {
+                    f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f}": row['fila_sheet']
+                    for _, row in pendientes.iterrows()
+                }
+                
+                col_sel, col_act = st.columns([3, 1])
+                with col_sel:
+                    factura_elegida = st.selectbox(
+                        "Selecciona la factura pendiente que deseas marcar como pagada:",
+                        options=list(opciones_facturas.keys())
+                    )
+                with col_act:
+                    st.write("")
+                    st.write("")
+                    if st.button("✅ Marcar como Cobrada", use_container_width=True):
+                        fila_destino = opciones_facturas[factura_elegida]
+                        if actualizar_estado_factura(fila_destino, "Cobrada"):
+                            st.success("¡Factura actualizada a Cobrada exitosamente!")
+                            st.cache_data.clear()
+                        else:
+                            st.error("Error al actualizar la factura en Google Sheets.")
             else:
-                st.success("🎉 ¡Excelente! No tienes facturas pendientes de cobro.")
+                st.success("🎉 Todas las facturas registradas están cobradas.")
 
             st.markdown("---")
-            st.markdown("##### 📜 Historial Completo de Entregas y Facturación")
-            st.dataframe(v_fac_df[['fecha', 'cliente', 'id_producto', 'unidades_vendidas', 'precio_venta_sin_iva', 'total_facturado', 'estado']], use_container_width=True)
+            st.markdown("##### 📜 Historial Completo de Entregas")
+            st.dataframe(
+                v_fac_df[['fecha', 'cliente', 'id_producto', 'unidades_vendidas', 'precio_venta_sin_iva', 'total_facturado', 'estado']], 
+                use_container_width=True
+            )
     except Exception as e:
-        st.error(f"Error al cargar módulo de facturación: {e}")
+        st.error(f"Error al cargar facturas: {e}")
 
-# --- PESTAÑA 1: DASHBOARD FINANCIERO ---
+# --- PESTAÑA: DASHBOARD FINANCIERO ---
 with tab_dashboard:
     try:
         ventas_df = cargar_tabla("Ventas")
@@ -357,6 +379,7 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
+        # Histórico: hasta 2026-10 incluye empaques ($241.50)[cite: 1, 2]; desde 2026-11 solo Luz y Gas ($54.00)[cite: 1, 2]
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
