@@ -98,6 +98,14 @@ def enviar_registro(pestaña, fila):
     except Exception:
         return False
 
+def marcar_factura_pagada(fila_index):
+    try:
+        payload = {"accion": "marcar_pagada", "pestaña": "Ventas", "fila_index": fila_index}
+        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        return resp.json().get("status") == "success"
+    except Exception:
+        return False
+
 def borrar_fila_remota(pestaña, fila_index):
     try:
         payload = {"accion": "borrar", "pestaña": pestaña, "fila_index": fila_index}
@@ -119,33 +127,59 @@ st.sidebar.link_button(
 if st.sidebar.button("🔄 Sincronizar Datos", use_container_width=True):
     st.cache_data.clear()
 
-tab_dashboard, tab_registro = st.tabs(["📊 Balance Financiero", "📝 Registrar / Gestionar Operaciones"])
+tab_dashboard, tab_registro, tab_facturas = st.tabs([
+    "📊 Balance Financiero", 
+    "📝 Registrar Operación", 
+    "📑 Facturas & Cuentas por Cobrar"
+])
 
-# --- PESTAÑA: REGISTRO Y GESTIÓN ---
+# --- PESTAÑA 2: REGISTRO RÁPIDO ---
 with tab_registro:
     st.markdown("#### 📝 Registro Rápido de Operaciones")
     col_form1, col_form2 = st.columns(2)
 
     with col_form1:
-        st.markdown("##### 🥖 Registrar Venta / Entrega")
+        st.markdown("##### 🥖 Registrar Entrega / Factura")
+        
+        # Sugerir correlativo automático en base al histórico
+        try:
+            v_check = cargar_tabla("Ventas")
+            siguiente_correlativo = f"FAC-{len(v_check) + 1:03d}"
+        except Exception:
+            siguiente_correlativo = "FAC-001"
+
         with st.form("form_venta", clear_on_submit=True):
-            fecha_venta = st.date_input("Fecha", datetime.date.today(), key="v_fecha")
+            col_fac1, col_fac2 = st.columns(2)
+            with col_fac1:
+                fecha_venta = st.date_input("Fecha de Entrega", datetime.date.today(), key="v_fecha")
+            with col_fac2:
+                num_factura = st.text_input("N° Factura / Correlativo", value=siguiente_correlativo, key="v_correlativo")
+
             cliente_venta = st.text_input("Cliente", placeholder="Ej. Ernestina Castro", key="v_cli")
+            
             col_v1, col_v2 = st.columns(2)
             with col_v1:
-                prod_venta = st.selectbox("Producto", ["PROD01"], key="v_prod")
+                prod_venta = st.selectbox("Producto", ["PROD01", "Cardenal"], key="v_prod")
             with col_v2:
-                unidades_venta = st.number_input("Unidades", min_value=1, step=1, value=1, key="v_cant")
-            precio_venta = st.number_input("Precio Cobrado Unitario ($)", min_value=0.0, step=0.10, value=2.20, key="v_precio")
-            submit_venta = st.form_submit_button("💾 Guardar Venta", use_container_width=True)
+                unidades_venta = st.number_input("Unidades Entregadas", min_value=1, step=1, value=35, key="v_cant")
+            
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                precio_venta = st.number_input("Precio Unitario ($)", min_value=0.0, step=0.10, value=2.20, key="v_precio")
+            with col_p2:
+                estado_cobro = st.selectbox("Estado de Cobro", ["Cobrada", "Pendiente"], key="v_estado")
+
+            submit_venta = st.form_submit_button("💾 Guardar Factura / Venta", use_container_width=True)
 
             if submit_venta:
                 if cliente_venta:
-                    if enviar_registro("Ventas", [str(fecha_venta), cliente_venta, prod_venta, int(unidades_venta), float(precio_venta)]):
-                        st.success(f"✅ Venta registrada: {unidades_venta} u. para {cliente_venta}")
+                    # Guardamos el formato: [Fecha, Cliente (con correlativo), Producto, Cantidad, Precio, Estado]
+                    cliente_completo = f"{cliente_venta} ({num_factura})" if num_factura else cliente_venta
+                    if enviar_registro("Ventas", [str(fecha_venta), cliente_completo, prod_venta, int(unidades_venta), float(precio_venta), estado_cobro]):
+                        st.success(f"✅ Factura {num_factura} registrada ({unidades_venta} u.) - {estado_cobro}")
                         st.cache_data.clear()
                     else:
-                        st.error("Error al registrar la venta.")
+                        st.error("Error al registrar la factura.")
                 else:
                     st.error("Ingresa el nombre del cliente.")
 
@@ -169,7 +203,7 @@ with tab_registro:
                 ["Insumos", "Operativos", "Empaques", "Gastos Personales", "Otros"], 
                 key="g_cat"
             )
-            desc_gasto = st.text_input("Descripción", placeholder="Ej. Moldes 100u, Harina, Gasolina, Medicina", key="g_desc")
+            desc_gasto = st.text_input("Descripción", placeholder="Ej. Moldes 100u, Harina, Gasolina", key="g_desc")
             monto_gasto = st.number_input("Monto Total Pagado ($)", min_value=0.0, step=0.50, key="g_monto")
             submit_gasto = st.form_submit_button("💾 Guardar Gasto", use_container_width=True)
 
@@ -184,7 +218,6 @@ with tab_registro:
                     st.error("Completa la descripción y el monto.")
 
     st.markdown("---")
-    
     st.markdown("#### 🗑️ Corregir / Eliminar Registros Recientes")
     col_del_v, col_del_g = st.columns(2)
 
@@ -193,9 +226,7 @@ with tab_registro:
         try:
             v_df = cargar_tabla("Ventas")
             if not v_df.empty:
-                v_df_vista = v_df.tail(5).copy()
-                st.dataframe(v_df_vista, use_container_width=True)
-                
+                st.dataframe(v_df.tail(5), use_container_width=True)
                 idx_ultima_venta = len(v_df) + 1
                 if st.button(f"🗑️ Eliminar Última Venta (Fila #{idx_ultima_venta})", key="del_v", use_container_width=True):
                     if borrar_fila_remota("Ventas", idx_ultima_venta):
@@ -213,9 +244,7 @@ with tab_registro:
         try:
             g_df = cargar_tabla("Gastos_Diarios")
             if not g_df.empty:
-                g_df_vista = g_df.tail(5).copy()
-                st.dataframe(g_df_vista, use_container_width=True)
-                
+                st.dataframe(g_df.tail(5), use_container_width=True)
                 idx_ultimo_gasto = len(g_df) + 1
                 if st.button(f"🗑️ Eliminar Último Gasto (Fila #{idx_ultimo_gasto})", key="del_g", use_container_width=True):
                     if borrar_fila_remota("Gastos_Diarios", idx_ultimo_gasto):
@@ -228,7 +257,59 @@ with tab_registro:
         except Exception as e:
             st.error(f"Error al leer gastos: {e}")
 
-# --- PESTAÑA: DASHBOARD FINANCIERO ---
+# --- PESTAÑA 3: GESTIÓN DE FACTURAS & COBROS ---
+with tab_facturas:
+    st.markdown("#### 📑 Facturas y Estado de Cobros")
+    st.caption("Supervisa los pedidos entregados y gestiona facturas pendientes de pago.")
+
+    try:
+        v_fac_df = cargar_tabla("Ventas")
+        if not v_fac_df.empty:
+            if 'estado' not in v_fac_df.columns:
+                v_fac_df['estado'] = 'Cobrada'
+            else:
+                v_fac_df['estado'] = v_fac_df['estado'].fillna('Cobrada')
+
+            v_fac_df['precio_venta_sin_iva'] = limpiar_numero(v_fac_df['precio_venta_sin_iva'])
+            v_fac_df['unidades_vendidas'] = pd.to_numeric(v_fac_df['unidades_vendidas'], errors='coerce').fillna(0)
+            v_fac_df['total_facturado'] = v_fac_df['unidades_vendidas'] * v_fac_df['precio_venta_sin_iva']
+            v_fac_df['fila_sheet'] = range(2, len(v_fac_df) + 2)
+
+            pendientes = v_fac_df[v_fac_df['estado'].str.lower() == 'pendiente']
+            cobradas = v_fac_df[v_fac_df['estado'].str.lower() != 'pendiente']
+
+            col_cf1, col_cf2 = st.columns(2)
+            with col_cf1:
+                total_pendiente = pendientes['total_facturado'].sum()
+                st.metric("Por Cobrar (Cartera Pendiente)", f"${total_pendiente:,.2f}", f"{len(pendientes)} facturas por cobrar", delta_color="inverse")
+            with col_cf2:
+                total_cobrado = cobradas['total_facturado'].sum()
+                st.metric("Total Cobrado Histórico", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
+
+            st.markdown("---")
+            st.markdown("##### ⏳ Facturas Pendientes de Cobro")
+            if not pendientes.empty:
+                for _, row in pendientes.iterrows():
+                    c_info, c_btn = st.columns([3, 1])
+                    with c_info:
+                        st.write(f"📅 **{row['fecha']}** | **{row['cliente']}** | {row['unidades_vendidas']} u. $\\rightarrow$ **${row['total_facturado']:,.2f}**")
+                    with c_btn:
+                        if st.button("✅ Marcar Pagada", key=f"pagar_{row['fila_sheet']}", use_container_width=True):
+                            if marcar_factura_pagada(row['fila_sheet']):
+                                st.success("¡Factura cobrada!")
+                                st.cache_data.clear()
+                            else:
+                                st.error("Error al actualizar estado.")
+            else:
+                st.success("🎉 ¡Excelente! No tienes facturas pendientes de cobro.")
+
+            st.markdown("---")
+            st.markdown("##### 📜 Historial Completo de Entregas y Facturación")
+            st.dataframe(v_fac_df[['fecha', 'cliente', 'id_producto', 'unidades_vendidas', 'precio_venta_sin_iva', 'total_facturado', 'estado']], use_container_width=True)
+    except Exception as e:
+        st.error(f"Error al cargar módulo de facturación: {e}")
+
+# --- PESTAÑA 1: DASHBOARD FINANCIERO ---
 with tab_dashboard:
     try:
         ventas_df = cargar_tabla("Ventas")
@@ -256,19 +337,13 @@ with tab_dashboard:
         ventas_mes = ventas_df[ventas_df['mes_año'] == mes_seleccionado]
         gastos_mes = gastos_diarios_df[gastos_diarios_df['mes_año'] == mes_seleccionado] if not gastos_diarios_df.empty else pd.DataFrame()
 
-        # CLASIFICACIÓN DE GASTOS EN LOS 3 BLOQUES
         def clasificar_gasto(row):
             cat = str(row['categoria']).lower()
             desc = str(row['descripcion']).lower()
-            
-            # 1. Gastos Personales / Retiros
             if 'personal' in cat or cat == 'otros' or any(p in desc for p in ['medicina', 'camisa', 'cena', 'temu', 'gasolina manuel', 'gas manuel']):
                 return 'Gastos Personales'
-            
-            # 2. Producción y Operativos
             if cat in ['insumos', 'operativos', 'empaques', 'produccion'] or any(p in desc for p in ['lote', 'harina', 'huevo', 'leche', 'molde', 'empaque', 'baterias']):
                 return 'Producción y Operativos'
-                
             return 'Producción y Operativos'
 
         if not gastos_mes.empty:
@@ -282,9 +357,6 @@ with tab_dashboard:
         total_prod_operativos = gastos_prod_operativos['monto'].sum() if not gastos_prod_operativos.empty else 0.0
         total_personales = gastos_personales['monto'].sum() if not gastos_personales.empty else 0.0
 
-        # CONDICIÓN HISTÓRICA: PROTECCIÓN DE MESES ANTERIORES
-        # Hasta 2026-10 se mantienen los fijos originales con empaques ($241.50)
-        # Desde 2026-11 solo se cobra Luz y Gas ($54.00)
         if mes_seleccionado <= '2026-10':
             costos_fijos_mes = costos_fijos_df['monto_mensual'].sum()
             df_fijos_vista = costos_fijos_df.copy()
@@ -297,14 +369,12 @@ with tab_dashboard:
         precio_unidad = ventas_mes['precio_venta_sin_iva'].iloc[0] if not ventas_mes.empty else 2.20
         ingresos_totales = unidades_vendidas * precio_unidad
         
-        # Carga completa: Fijos + Compras Operativas + Retiros Personales
         egresos_totales_mes = costos_fijos_mes + total_prod_operativos + total_personales
         utilidad_neta_real = ingresos_totales - egresos_totales_mes
 
         punto_equilibrio = int(egresos_totales_mes / precio_unidad) if precio_unidad > 0 else 1
         pct_cobertura = min(100.0, (unidades_vendidas / punto_equilibrio * 100)) if punto_equilibrio > 0 else 0
 
-        # TARJETAS KPI
         k1, k2, k3, k4 = st.columns(4)
         with k1:
             st.markdown(f"""
@@ -342,7 +412,6 @@ with tab_dashboard:
 
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
-        # GRÁFICAS
         g1, g2 = st.columns([1, 1])
         with g1:
             st.markdown("##### 🎯 Cobertura de Costos del Mes")
@@ -378,8 +447,6 @@ with tab_dashboard:
                 st.plotly_chart(fig_bar, use_container_width=True)
 
         st.markdown("---")
-
-        # SECCIÓN DIVIDIDA EN LOS 3 BLOQUES DE GASTOS
         st.markdown(f"### 📋 Desglose de Gastos del Mes ({mes_seleccionado})")
         
         tab_b1, tab_b2, tab_b3 = st.tabs([
@@ -402,7 +469,7 @@ with tab_dashboard:
             st.dataframe(df_fijos_vista, use_container_width=True)
 
         with tab_b3:
-            st.caption("Retiros del negocio y consumos personales (ropa, cenas, medicinas, combustible personal).")
+            st.caption("Retiros del negocio y consumos personales.")
             if not gastos_personales.empty:
                 vista_per = gastos_personales.copy()
                 vista_per['fecha'] = vista_per['fecha'].dt.strftime('%Y-%m-%d')
