@@ -85,7 +85,7 @@ def cargar_tabla(nombre_pestaña):
     pestaña_url = nombre_pestaña.replace(" ", "%20")
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={pestaña_url}"
     df = pd.read_csv(url)
-    df.columns = df.columns.astype(str).str.strip()
+    df.columns = df.columns.astype(str).str.strip().str.lower()
     return df
 
 def limpiar_numero(columna):
@@ -142,18 +142,19 @@ with tab_registro:
     with col_form1:
         st.markdown("##### 🥖 Registrar Entrega / Factura")
         
-        # Lógica para correlativo con formato 013-2026
+        # Correlativo automático con formato 013-2026
         siguiente_correlativo = "013-2026"
         try:
             v_check = cargar_tabla("Ventas")
-            numeros_encontrados = []
-            for item in v_check['cliente'].dropna().astype(str):
-                match = re.search(r'(\d{3,4})-2026', item)
-                if match:
-                    numeros_encontrados.append(int(match.group(1)))
-            if numeros_encontrados:
-                max_num = max(numeros_encontrados)
-                siguiente_correlativo = f"{max_num + 1:03d}-2026"
+            if 'cliente' in v_check.columns:
+                numeros_encontrados = []
+                for item in v_check['cliente'].dropna().astype(str):
+                    match = re.search(r'(\d{3,4})-2026', item)
+                    if match:
+                        numeros_encontrados.append(int(match.group(1)))
+                if numeros_encontrados:
+                    max_num = max(numeros_encontrados)
+                    siguiente_correlativo = f"{max_num + 1:03d}-2026"
         except Exception:
             siguiente_correlativo = "013-2026"
 
@@ -268,23 +269,40 @@ with tab_registro:
 # --- PESTAÑA: GESTIÓN RÁPIDA DE FACTURAS ---
 with tab_facturas:
     st.markdown("#### 📑 Gestión Ágil de Facturación y Cobros")
-    st.caption("Selecciona cualquier factura pendiente para marcarla como cobrada en un toque.")
+    st.caption("Supervisa tus cuentas por cobrar y cambia el estado de cualquier factura con un clic.")
 
     try:
         v_fac_df = cargar_tabla("Ventas")
         if not v_fac_df.empty:
+            # Normalizar columna de producto de forma flexible
+            if 'id_producto' in v_fac_df.columns:
+                v_fac_df['producto_mostrado'] = v_fac_df['id_producto']
+            elif 'producto' in v_fac_df.columns:
+                v_fac_df['producto_mostrado'] = v_fac_df['producto']
+            else:
+                # Tomar la 3ra columna disponible si existe
+                v_fac_df['producto_mostrado'] = v_fac_df.iloc[:, 2] if len(v_fac_df.columns) > 2 else "PROD01"
+
+            # Normalizar columna de estado
             if 'estado' not in v_fac_df.columns:
                 v_fac_df['estado'] = 'Cobrada'
             else:
                 v_fac_df['estado'] = v_fac_df['estado'].fillna('Cobrada')
 
-            v_fac_df['precio_venta_sin_iva'] = limpiar_numero(v_fac_df['precio_venta_sin_iva'])
-            v_fac_df['unidades_vendidas'] = pd.to_numeric(v_fac_df['unidades_vendidas'], errors='coerce').fillna(0)
-            v_fac_df['total_facturado'] = v_fac_df['unidades_vendidas'] * v_fac_df['precio_venta_sin_iva']
+            # Normalizar precios y cantidades
+            col_precio = [c for c in v_fac_df.columns if 'precio' in c]
+            col_unidades = [c for c in v_fac_df.columns if 'unidad' in c or 'cant' in c]
+            
+            p_col_name = col_precio[0] if col_precio else v_fac_df.columns[4]
+            u_col_name = col_unidades[0] if col_unidades else v_fac_df.columns[3]
+
+            v_fac_df['precio_num'] = limpiar_numero(v_fac_df[p_col_name])
+            v_fac_df['unidades_num'] = pd.to_numeric(v_fac_df[u_col_name], errors='coerce').fillna(0)
+            v_fac_df['total_facturado'] = v_fac_df['unidades_num'] * v_fac_df['precio_num']
             v_fac_df['fila_sheet'] = range(2, len(v_fac_df) + 2)
 
-            pendientes = v_fac_df[v_fac_df['estado'].str.strip().str.lower() == 'pendiente']
-            cobradas = v_fac_df[v_fac_df['estado'].str.strip().str.lower() != 'pendiente']
+            pendientes = v_fac_df[v_fac_df['estado'].astype(str).str.strip().str.lower() == 'pendiente']
+            cobradas = v_fac_df[v_fac_df['estado'].astype(str).str.strip().str.lower() != 'pendiente']
 
             col_cf1, col_cf2 = st.columns(2)
             with col_cf1:
@@ -292,42 +310,58 @@ with tab_facturas:
                 st.metric("Cartera por Cobrar", f"${total_pendiente:,.2f}", f"{len(pendientes)} facturas pendientes", delta_color="inverse")
             with col_cf2:
                 total_cobrado = cobradas['total_facturado'].sum()
-                st.metric("Total Cobrado", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
+                st.metric("Total Cobrado Histórico", f"${total_cobrado:,.2f}", f"{len(cobradas)} facturas saldadas")
 
             st.markdown("---")
             
+            # SELECTOR RÁPIDO PARA CAMBIAR ESTADO
             st.markdown("##### ⚡ Cambiar Estado de Factura")
-            if not pendientes.empty:
-                opciones_facturas = {
-                    f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f}": row['fila_sheet']
-                    for _, row in pendientes.iterrows()
-                }
+            
+            col_sel1, col_sel2 = st.columns([2.5, 1])
+            with col_sel1:
+                tipo_lista = st.radio("¿Qué facturas deseas listar para editar?", ["Pendientes de Cobro", "Todas las Facturas"], horizontal=True)
                 
-                col_sel, col_act = st.columns([3, 1])
-                with col_sel:
-                    factura_elegida = st.selectbox(
-                        "Selecciona la factura pendiente que deseas marcar como pagada:",
-                        options=list(opciones_facturas.keys())
-                    )
-                with col_act:
+                df_para_editar = pendientes if tipo_lista == "Pendientes de Cobro" else v_fac_df
+                
+                if not df_para_editar.empty:
+                    opciones_facturas = {
+                        f"Fila #{row['fila_sheet']} | {row['fecha']} | {row['cliente']} | ${row['total_facturado']:,.2f} (Actualmente: {row['estado']})": (row['fila_sheet'], row['estado'])
+                        for _, row in df_para_editar.iterrows()
+                    }
+                    factura_elegida = st.selectbox("Selecciona la entrega:", options=list(opciones_facturas.keys()))
+                else:
+                    factura_elegida = None
+                    st.success("🎉 No hay facturas pendientes en este momento.")
+
+            with col_sel2:
+                if factura_elegida:
+                    fila_destino, estado_actual = opciones_facturas[factura_elegida]
                     st.write("")
                     st.write("")
-                    if st.button("✅ Marcar como Cobrada", use_container_width=True):
-                        fila_destino = opciones_facturas[factura_elegida]
-                        if actualizar_estado_factura(fila_destino, "Cobrada"):
-                            st.success("¡Factura actualizada a Cobrada exitosamente!")
+                    nuevo_estado = st.selectbox("Nuevo Estado:", ["Cobrada", "Pendiente"])
+                    if st.button("💾 Aplicar Cambio", use_container_width=True):
+                        if actualizar_estado_factura(fila_destino, nuevo_estado):
+                            st.success(f"¡Fila #{fila_destino} actualizada a {nuevo_estado}!")
                             st.cache_data.clear()
                         else:
                             st.error("Error al actualizar la factura en Google Sheets.")
-            else:
-                st.success("🎉 Todas las facturas registradas están cobradas.")
 
             st.markdown("---")
             st.markdown("##### 📜 Historial Completo de Entregas")
-            st.dataframe(
-                v_fac_df[['fecha', 'cliente', 'id_producto', 'unidades_vendidas', 'precio_venta_sin_iva', 'total_facturado', 'estado']], 
-                use_container_width=True
-            )
+            
+            # Tabla visual con nombres de columnas estables y limpios
+            tabla_vista = v_fac_df.rename(columns={
+                'fecha': 'Fecha',
+                'cliente': 'Cliente / Correlativo',
+                'producto_mostrado': 'Producto',
+                'unidades_num': 'Porciones',
+                'precio_num': 'Precio ($)',
+                'total_facturado': 'Total ($)',
+                'estado': 'Estado'
+            })
+            columnas_finales = ['Fecha', 'Cliente / Correlativo', 'Producto', 'Porciones', 'Precio ($)', 'Total ($)', 'Estado']
+            st.dataframe(tabla_vista[columnas_finales], use_container_width=True)
+
     except Exception as e:
         st.error(f"Error al cargar facturas: {e}")
 
@@ -344,8 +378,14 @@ with tab_dashboard:
         except Exception:
             gastos_diarios_df = pd.DataFrame(columns=['fecha', 'categoria', 'descripcion', 'monto'])
 
-        ventas_df['precio_venta_sin_iva'] = limpiar_numero(ventas_df['precio_venta_sin_iva'])
-        ventas_df['unidades_vendidas'] = pd.to_numeric(ventas_df['unidades_vendidas'], errors='coerce').fillna(0)
+        # Detección segura de columnas en ventas
+        col_precio = [c for c in ventas_df.columns if 'precio' in c]
+        col_unidades = [c for c in ventas_df.columns if 'unidad' in c or 'cant' in c]
+        p_col_name = col_precio[0] if col_precio else ventas_df.columns[4]
+        u_col_name = col_unidades[0] if col_unidades else ventas_df.columns[3]
+
+        ventas_df['precio_venta_sin_iva'] = limpiar_numero(ventas_df[p_col_name])
+        ventas_df['unidades_vendidas'] = pd.to_numeric(ventas_df[u_col_name], errors='coerce').fillna(0)
         ventas_df['fecha'] = pd.to_datetime(ventas_df['fecha'])
         costos_fijos_df['monto_mensual'] = limpiar_numero(costos_fijos_df['monto_mensual'])
 
